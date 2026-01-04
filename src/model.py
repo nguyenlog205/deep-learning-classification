@@ -1,116 +1,90 @@
 import torch
 import torch.nn as nn
-import timm
+import torchvision.models as models
+import math
 
-class TemporalShift(nn.Module):
-    """
-    Temporal Shift Module (TSM)
-    (Same as before: Shift left/right, zero parameters)
-    """
-    def __init__(self, n_segment=8, n_div=8):
-        super(TemporalShift, self).__init__()
-        self.n_segment = n_segment
-        self.fold_div = n_div
-
-    def forward(self, x):
-        nt, c, h, w = x.size()
-        n_batch = nt // self.n_segment
-        x = x.view(n_batch, self.n_segment, c, h, w)
-        fold = c // self.fold_div
-        out = torch.zeros_like(x)
-        out[:, :-1, :fold] = x[:, 1:, :fold] 
-        out[:, 1:, fold:2 * fold] = x[:, :-1, fold:2 * fold] 
-        out[:, :, 2 * fold:] = x[:, :, 2 * fold:] 
-        return out.view(nt, c, h, w)
-
-class TSMBlock(nn.Module):
-    """
-    Wraps an existing block (e.g., MBConv) with Temporal Shift.
-    """
-    def __init__(self, net_block, n_segment):
-        super(TSMBlock, self).__init__()
-        self.tsm = TemporalShift(n_segment=n_segment)
-        self.net_block = net_block
+class PositionalEncoding(nn.Module):
+    def __init__(self, d_model, max_len=500, dropout=0.1):
+        super().__init__()
+        self.dropout = nn.Dropout(p=dropout)
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        pe = pe.unsqueeze(0)
+        self.register_buffer('pe', pe)
 
     def forward(self, x):
-        x = self.tsm(x)
-        return self.net_block(x)
+        x = x + self.pe[:, :x.size(1), :]
+        return self.dropout(x)
 
-class ActionHead(nn.Module):
-    """
-    Custom MLP Head for Classification.
-    Structure: Dropout -> Linear -> Hardswish -> Dropout -> Linear
-    """
-    def __init__(self, in_features, hidden_dim, num_classes, dropout_p=0.5):
-        super(ActionHead, self).__init__()
-        self.head = nn.Sequential(
-            nn.Dropout(p=dropout_p),
-            nn.Linear(in_features, hidden_dim),
-            nn.Hardswish(),  # Efficient activation function
-            nn.Dropout(p=dropout_p),
-            nn.Linear(hidden_dim, num_classes)
+class EfficientNetTransformer(nn.Module):
+    def __init__(
+        self, 
+        num_classes=10, 
+        d_model=1280,       # EfficientNet-B0 feature size
+        nhead=8,            # Số lượng Attention Heads
+        num_layers=4,       # Số lớp Transformer Encoder
+        dropout=0.1
+    ):
+        super().__init__()
+        
+        #  --- EfficientNet-B0 ---
+        print("Initializing EfficientNet-B0 backbone...")
+        weights = models.EfficientNet_B0_Weights.DEFAULT
+        self.backbone = models.efficientnet_b0(weights=weights)
+        self.backbone.classifier = nn.Identity() 
+        
+        # POSITIONAL ENCODING
+        self.pos_encoder = PositionalEncoding(d_model, dropout=dropout)
+        
+        # TRANSFORMER ENCODER
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model, 
+            nhead=nhead, 
+            dim_feedforward=2048, 
+            dropout=dropout,
+            batch_first=True
+        )
+        self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        
+        # CLASSIFICATION HEAD
+        self.classifier = nn.Sequential(
+            nn.LayerNorm(d_model),
+            nn.Linear(d_model, 256),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(256, num_classes)
         )
 
     def forward(self, x):
-        return self.head(x)
-
-class EfficientNetTSM(nn.Module):
-    def __init__(self, num_classes=10, n_segments=8, pretrained=True, dropout_p=0.5):
-        super(EfficientNetTSM, self).__init__()
-        self.n_segments = n_segments
+        b, t, c, h, w = x.shape
         
-        # 1. Load Backbone
-        self.backbone = timm.create_model('efficientnet_b0', pretrained=pretrained, drop_path_rate=0.2)
-        
-        # 2. Inject TSM
-        self._inject_tsm()
-        
-        # 3. Define Custom Head
-        # EfficientNet-B0 usually has 1280 output features
-        num_features = self.backbone.classifier.in_features
-        
-        # Remove original classifier to save memory (optional)
-        self.backbone.classifier = nn.Identity()
-        
-        # Add robust head
-        self.head = ActionHead(
-            in_features=num_features, 
-            hidden_dim=512,           # Compress to 512
-            num_classes=num_classes, 
-            dropout_p=dropout_p
-        )
-
-    def _inject_tsm(self):
-        for stage_idx, stage in enumerate(self.backbone.blocks):
-            for block_idx, block in enumerate(stage):
-                stage[block_idx] = TSMBlock(block, self.n_segments)
-
-    def forward(self, x):
-        # Input: (Batch, Frames, C, H, W)
-        b, t, c, h, w = x.size()
-        
-        # Flatten for backbone
+        # --- CNN Feature Extraction ---
         x = x.view(b * t, c, h, w)
-        
-        # Backbone Features
-        features = self.backbone.forward_features(x)
-        
-        # Global Pooling
-        features = self.backbone.global_pool(features) 
-        if isinstance(features, tuple): features = features[0]
-        features = features.flatten(1) # (B*T, 1280)
-        
-        # Temporal Consensus (Average)
+        # --- EfficientNet
+        features = self.backbone(x) # Output: (480, 1280)
         features = features.view(b, t, -1)
-        consensus = features.mean(dim=1) # (B, 1280)
         
-        # Classification Head
-        logits = self.head(consensus) # (B, Num_Classes)
+        # --- Transformer Modeling ---
+        features = self.pos_encoder(features)
+        transformer_out = self.transformer_encoder(features)
+        
+        # --- Classification ---
+        mean_features = torch.mean(transformer_out, dim=1) # Shape: (16, 1280)
+        
+        logits = self.classifier(mean_features) # Shape: (16, num_classes)
         
         return logits
-
+    
 def example():
-    model = EfficientNetTSM(num_classes=10, n_segments=8, dropout_p=0.5)
-    dummy_input = torch.randn(2, 8, 3, 224, 224)
+    model = EfficientNetTransformer(num_classes=10)
+    
+    # Input giả lập: Batch=2, Frames=16, C=3, H=224, W=224
+    dummy_input = torch.randn(2, 16, 3, 224, 224)
+    
     output = model(dummy_input)
-    print(f"Output Shape: {output.shape}") # (2, 10)
+    print(f"Input shape: {dummy_input.shape}")
+    print(f"Output shape: {output.shape}") # Mong đợi: (2, 10)
