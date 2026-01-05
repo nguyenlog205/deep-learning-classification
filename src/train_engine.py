@@ -11,29 +11,32 @@ from src.trainer.training import train, evaluate
 CONFIG = {
     "data_root": "./data/training_dataset",
     "num_frames": 64,
-    "batch_size": 2,
+    "batch_size": 4,
     "num_workers": 4,
 
-    # Model params
-    "d_model": 1280,
+    "d_model": 512,
     "num_layers": 2,
     "nhead": 8,
     
     # Training params
-    "epochs": 20,
-    "lr": 1e-4,
+    "epochs": 30,
+    "lr": 1e-5,
     "weight_decay": 1e-4,
-    "patience": 10,
-    "accumulation_steps": 16,
+    "patience": 5,
+    "accumulation_steps": 8,
     "use_amp": True,
+    "dropout": 0.3,
+    "label_smoothing": 0.001,
     
     # Paths
-    "checkpoints_dir": "./checkpoints",
+    "checkpoints_dir": "./models/checkpoints",
     "device": "cuda" if torch.cuda.is_available() else "cpu"
 }
 
 def main():
     print(f"--- RUNNING TRAINING ON {CONFIG['device'].upper()} ---")
+    # Đảm bảo thư mục tồn tại
+    Path(CONFIG["checkpoints_dir"]).mkdir(parents=True, exist_ok=True)
     
     # Prepare Data
     print("\n[1/5] Loading Datasets...")
@@ -51,12 +54,26 @@ def main():
         num_classes=num_classes,
         d_model=CONFIG["d_model"],
         num_layers=CONFIG["num_layers"],
-        nhead=CONFIG["nhead"]
+        nhead=CONFIG["nhead"],
+        dropout=CONFIG["dropout"]
     )
+
+    # Resume từ checkpoint cũ
+    checkpoint_path = Path(CONFIG["checkpoints_dir"]) / "best_model.pth"
+    if checkpoint_path.exists():
+        print(f"   >>> Found existing checkpoint at {checkpoint_path}. Loading weights...")
+        try:
+            model.load_state_dict(torch.load(checkpoint_path, map_location=CONFIG["device"]))
+            print("   >>> Successfully loaded best_model.pth - Resuming training...")
+        except Exception as e:
+            print(f"   >>> Error loading checkpoint: {e}")
+            print("   >>> Starting from scratch instead.")
+    else:
+        print("   >>> No existing checkpoint found. Starting training from scratch.")
 
     # Setup Loss & Optimizer
     print("\n[3/5] Setting up Optimizer & Loss...")
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.CrossEntropyLoss(label_smoothing=CONFIG["label_smoothing"])
 
     optimizer = optim.AdamW(
         model.parameters(), 
@@ -65,8 +82,19 @@ def main():
     )
 
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.5, patience=2, verbose=True
+        optimizer, mode='min', factor=0.5, patience=2
     )
+
+    # --- FREEZE BACKBONE ---
+    print(">>> Freezing EfficientNet backbone but opening last 2 blocks...")
+    for param in model.backbone.parameters():
+        param.requires_grad = False
+    for param in model.backbone.features[-2:].parameters():
+        param.requires_grad = True
+
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f">>> Number of trainable parameters: {trainable_params:,}")
+    print(f'>>> Trainable parameter ratio: {trainable_params / sum(p.numel() for p in model.parameters()):.2%}')
 
     # Training
     print("\n[4/5] Starting Training Loop...")
@@ -87,9 +115,8 @@ def main():
 
     # Final Test Evaluation
     print("\n[5/5] Evaluating on Test Set (Best Model)...")
-    best_model_path = Path(CONFIG["checkpoints_dir"]) / "best_model.pth"
-    if best_model_path.exists():
-        model.load_state_dict(torch.load(best_model_path))
+    if checkpoint_path.exists():
+        model.load_state_dict(torch.load(checkpoint_path, map_location=CONFIG["device"]))
         print("   >>> Loaded best model weights.")
         
         test_loss, test_acc = evaluate(model, test_loader, criterion, torch.device(CONFIG["device"]))
@@ -100,6 +127,6 @@ def main():
 if __name__ == "__main__":
     import multiprocessing
     multiprocessing.freeze_support()
-    
     main()
-    # python -m src.train_engine
+
+# python -m src.train_engine

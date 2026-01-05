@@ -5,36 +5,35 @@ import torch
 import numpy as np
 from pathlib import Path
 from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import WeightedRandomSampler
 from torchvision import transforms
 from PIL import Image
 
 class VideoDataset(Dataset):
     def __init__(self, root_dir, num_frames=30, transform=None, mode='train'):
-        """
-        Args:
-            root_dir (str): Đường dẫn đến folder (VD: 'data/dataset/train')
-            num_frames (int): Số lượng frame cố định model cần (T).
-            transform: Các bước augment/normalize (torchvision.transforms).
-            mode (str): 'train', 'val', hoặc 'test'.
-        """
         self.root_dir = Path(root_dir)
         self.num_frames = num_frames
         self.transform = transform
         self.mode = mode
         
-        self.classes = sorted([d.name for d in self.root_dir.iterdir() if d.is_dir()])
-        self.class_to_idx = {cls_name: i for i, cls_name in enumerate(self.classes)}
-        
+        self.meta_path = self.root_dir.parent / 'class_map.json'
+
+        if self.mode == 'train' or not self.meta_path.exists():
+            self.classes = sorted([d.name for d in self.root_dir.iterdir() if d.is_dir()])
+            self.class_to_idx = {cls_name: i for i, cls_name in enumerate(self.classes)}
+            self._save_metadata()
+        else:
+            with open(self.meta_path, 'r', encoding='utf-8') as f:
+                meta = json.load(f)
+                self.classes = meta['idx_to_class']
+                self.class_to_idx = meta['class_to_idx']
+
         self.samples = []
         for class_name in self.classes:
             class_dir = self.root_dir / class_name
+            if not class_dir.exists(): continue 
             for vid_path in class_dir.glob("*.mp4"):
                 self.samples.append((str(vid_path), self.class_to_idx[class_name]))
-
-        if self.mode == 'train':
-            self._save_metadata()
-
-        print(f"[{mode.upper()}] Loaded {len(self.samples)} videos from {len(self.classes)} classes.")
 
     def _save_metadata(self):
         meta_path = self.root_dir.parent / 'class_map.json'
@@ -50,44 +49,71 @@ class VideoDataset(Dataset):
                 ensure_ascii=False
             )
 
-    def _load_video(self, path):
-        """Đọc video và lấy mẫu T frames"""
-        cap = cv2.VideoCapture(path)
-        frames = []
-        try:
-            while True:
-                ret, frame = cap.read()
-                if not ret: break
-                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                frames.append(frame)
-        finally:
-            cap.release()
-
-        if len(frames) == 0:
-            return None
-
-        total_frames = len(frames)
-        indices = np.linspace(0, total_frames - 1, self.num_frames).astype(int)
-        sampled_frames = [frames[i] for i in indices]
-        
-        return sampled_frames
-
     def __len__(self):
         return len(self.samples)
 
+    def _get_indices(self, total_frames):
+        """Logic lấy mẫu khung hình thông minh hơn"""
+        if self.mode == 'train':
+            seg_size = total_frames // self.num_frames
+            if seg_size > 0:
+                indices = [np.random.randint(i * seg_size, (i + 1) * seg_size) 
+                           for i in range(self.num_frames)]
+            else:
+                indices = np.linspace(0, total_frames - 1, self.num_frames).astype(int)
+        else:
+            indices = np.linspace(0, total_frames - 1, self.num_frames).astype(int)
+        return indices
+
+    def _load_video(self, path):
+        cap = cv2.VideoCapture(path)
+        if not cap.isOpened():
+            return None
+
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        if total_frames <= 0:
+            cap.release()
+            return None
+
+        indices = self._get_indices(total_frames)
+        sampled_frames = []
+        last_idx = -1
+
+        for idx in indices:
+            if idx != last_idx + 1:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+            
+            ret, frame = cap.read()
+            if ret:
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                sampled_frames.append(frame)
+                last_idx = idx
+            else:
+                if sampled_frames:
+                    sampled_frames.append(sampled_frames[-1])
+        
+        cap.release()
+        
+        if len(sampled_frames) == 0:
+            return None
+            
+        while len(sampled_frames) < self.num_frames:
+            sampled_frames.append(sampled_frames[-1])
+
+        return sampled_frames[:self.num_frames]
+
     def __getitem__(self, idx):
         path, label = self.samples[idx]
-
         frames = self._load_video(path)
 
-        if frames is None:
-            return None
+        if frames is None or len(frames) == 0:
+            return self.__getitem__(np.random.randint(0, len(self.samples)))
         
+        frames = [Image.fromarray(f) for f in frames]
+
         if self.transform:
-            frames = [Image.fromarray(f) for f in frames]
             frames = [self.transform(f) for f in frames]
-        video_tensor = torch.stack(frames) 
-        
+        video_tensor = torch.stack(frames) # (T, C, H, W)
         return video_tensor, label
 
 def robust_collate_fn(batch):
@@ -99,11 +125,10 @@ def robust_collate_fn(batch):
     return torch.stack(videos), torch.tensor(labels)
 
 def get_dataloaders(data_root='./data/training_dataset', batch_size=16, num_frames=30, num_workers=4):
-    """
-    Factory function để tạo cả 3 loaders một lúc
-    """
     train_transform = transforms.Compose([
         transforms.Resize((128, 128)),
+        # transforms.RandomHorizontalFlip(p=0.5), # Tăng cường dữ liệu
+        transforms.ColorJitter(brightness=0.2, contrast=0.2),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])
@@ -118,10 +143,18 @@ def get_dataloaders(data_root='./data/training_dataset', batch_size=16, num_fram
     val_ds = VideoDataset(f"{data_root}/val", num_frames, val_test_transform, mode='val')
     test_ds = VideoDataset(f"{data_root}/test", num_frames, val_test_transform, mode='test')
 
+    targets = [s[1] for s in train_ds.samples]
+    class_sample_count = np.array([len(np.where(targets == t)[0]) for t in np.unique(targets)])
+    weight = 1. / class_sample_count
+    samples_weight = np.array([weight[t] for t in targets])
+    samples_weight = torch.from_numpy(samples_weight)
+    
+    sampler = WeightedRandomSampler(samples_weight.type('torch.DoubleTensor'), len(samples_weight))
+
     train_loader = DataLoader(
         train_ds, 
         batch_size=batch_size, 
-        shuffle=True,
+        sampler=sampler, # Thay thế shuffle=True bằng sampler
         num_workers=num_workers,
         collate_fn=robust_collate_fn,
         pin_memory=True
