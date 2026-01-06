@@ -25,8 +25,8 @@ CONFIG = {
     "patience": 5,
     "accumulation_steps": 8,
     "use_amp": True,
-    "dropout": 0.3,
-    "label_smoothing": 0.001,
+    "dropout": 0.5,
+    "label_smoothing": 0.2,
     
     # Paths
     "checkpoints_dir": "./models/checkpoints",
