@@ -5,3 +5,5 @@ __pycache__/
 saved/
 
 best_model_d1280.pth
+
+data_origin/
