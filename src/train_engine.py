@@ -4,7 +4,7 @@ import torch.optim as optim
 from pathlib import Path
 
 from src.trainer.data_module import get_dataloaders
-from src.model import EfficientNetTransformer
+from src.models.efficient_transformer import EfficientNetTransformer
 from src.trainer.training import train, evaluate
 
 # --- CONFIGURATION ---

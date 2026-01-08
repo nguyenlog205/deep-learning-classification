@@ -92,7 +92,8 @@ def train(
     patience=5,
     accumulation_steps=1,
     checkpoints_dir='./checkpoints',
-    use_amp=True
+    use_amp=True,
+    save_name='best_model.pth'
 ):
     os.makedirs(checkpoints_dir, exist_ok=True)
     device = torch.device(device)
@@ -139,8 +140,10 @@ def train(
         if val_acc > best_val_acc:
             best_val_acc = val_acc
             patience_counter = 0
-            torch.save(model.state_dict(), f"{checkpoints_dir}/best_model.pth")
-            print(f">>> Saved Best Model (Acc: {best_val_acc:.4f})")
+
+            save_path = os.path.join(checkpoints_dir, save_name)
+            torch.save(model.state_dict(), save_path)
+            print(f">>> Saved Best Model to {save_name} (Acc: {best_val_acc:.4f})")
         else:
             patience_counter += 1
             
@@ -148,7 +151,11 @@ def train(
             print(f"Early Stopping triggered at epoch {epoch+1}!")
             break
             
-    with open(f"{checkpoints_dir}/history.json", 'w') as f:
+    history_name = f"history_{save_name.replace('.pth', '.json')}"
+    history_path = os.path.join(checkpoints_dir, history_name)
+    
+    with open(history_path, 'w') as f:
         json.dump(history, f)
+    print(f">>> Saved training history to {history_name}")
         
     return history

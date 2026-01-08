@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from tqdm import tqdm
 
-from src.model import EfficientNetTransformer
+from src.models.efficient_transformer import EfficientNetTransformer
 from src.trainer.data_module import get_dataloaders
 
 def load_model_full(config):
