@@ -1,0 +1,12 @@
+              precision    recall  f1-score   support
+
+  brush_hair     0.8462    0.6875    0.7586        16
+climb_stairs     0.8667    0.7647    0.8125        17
+         eat     0.6939    0.8293    0.7556        41
+  fall_floor     0.5000    0.5500    0.5238        20
+        push     0.7500    0.8333    0.7895        18
+        walk     0.8571    0.8000    0.8276       105
+
+    accuracy                         0.7742       217
+   macro avg     0.7523    0.7441    0.7446       217
+weighted avg     0.7844    0.7742    0.7766       217
