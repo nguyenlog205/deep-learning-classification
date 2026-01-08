@@ -1,0 +1,24 @@
+# --- SYSTEM CONFIGS ---
+model_name: "transformer"
+data_root: "./data/training_dataset"
+checkpoints_dir: "./models/checkpoints/efficient_transformer"
+
+# --- DATA LOADER ---
+num_frames: 64
+batch_size: 4
+num_workers: 4
+
+# --- MODEL ARCHITECTURE ---
+d_model: 512
+num_layers: 2
+nhead: 8
+dropout: 0.5
+
+# --- TRAINING HYPERPARAMETERS ---
+epochs: 30
+lr: 1.0e-5
+weight_decay: 1.0e-4
+patience: 5
+accumulation_steps: 8
+use_amp: true
+label_smoothing: 0.2
