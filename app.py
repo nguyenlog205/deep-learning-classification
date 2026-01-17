@@ -28,6 +28,22 @@ app.add_middleware(
     allow_headers=["*"], # Cho phép tất cả các headers
 )
 
+os.environ['TORCH_HOME'] = '/app/checkpoints'
+
+from torchvision import models
+def preload_model_weights():
+    checkpoint_path = '/app/checkpoints/hub/checkpoints'
+    os.makedirs(checkpoint_path, exist_ok=True)
+
+    if not os.listdir(checkpoint_path):
+        print("Đang tải checkpoint lần đầu (Đợi tí, chỉ tải 1 lần này thôi)...")
+        models.efficientnet_b0(weights='DEFAULT')
+        print("Tải xong! Đã lưu vào /app/checkpoints")
+    else:
+        print("Checkpoint đã có sẵn, nạp model luôn.")
+
+preload_model_weights()
+
 # ====================================================================
 # CONFIGURATION & MODEL LOADING
 # ====================================================================
