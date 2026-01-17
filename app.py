@@ -35,7 +35,6 @@ app.add_middleware(
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"--- Running on: {device} ---")
 
-# Load labels logic (Giữ nguyên của bạn)
 CLASS_MAP_PATH = "data/training_dataset/class_map.json"
 try:
     with open(CLASS_MAP_PATH, "r", encoding="utf-8") as f:
