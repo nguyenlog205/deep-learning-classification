@@ -1,0 +1,11 @@
+# .dockerignore
+__pycache__/
+saved/
+best_model_d1280.pth
+
+data/
+!data/training_dataset/class_map.json
+
+.git/
+.env
+ai_env/
